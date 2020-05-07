@@ -18,6 +18,11 @@
 
  */
 
+
+#define SIDE_ONE_CODE
+//#define SIDE_TWO_CODE
+
+
 // ********************************** //
 // ****** Motor 1 declarations ****** //
 // ********************************** //
@@ -150,11 +155,15 @@ float current_m1_speed;
 float current_m2_speed;
 float angle_first_value = 0.0f;
 
-
 // Мусор для отладки
 int16_t raw_filtered_data_arrary[7];
 float accelerometer_based_angle;
 float gyroscope_based_angle;
+
+/* Переменные конечного автомата */
+// Переключение из режима балансирования в горизонтальный режим при ошибке по углу в 20 градусов
+// Переключение из горизонтального режима в режим балансирования при ошибке по углу в 15 градусов
+uint32_t current_controller_state = blancing_state;
 
 int main(void)
 {
@@ -189,9 +198,19 @@ int main(void)
 	robot_imu.gyro_full_scale_setup = icm_gyro_500dps;
 	robot_imu.accel_full_scale_setup = icm_accel_2g;
 	robot_imu.enable_temperature_sensor = 0;
-	robot_imu.gyro_calibration_coefficients[icm_x] = -35;
-	robot_imu.gyro_calibration_coefficients[icm_y] = 412;
+
+#ifdef SIDE_ONE_CODE // Calibration for side one
+	robot_imu.gyro_calibration_coefficients[icm_x] = -30;
+	robot_imu.gyro_calibration_coefficients[icm_y] = 421;
 	robot_imu.gyro_calibration_coefficients[icm_z] = -84;
+#endif
+
+#ifdef SIDE_TWO_CODE // Calibration for side two
+	robot_imu.gyro_calibration_coefficients[icm_x] = -34;
+	robot_imu.gyro_calibration_coefficients[icm_y] = 5;
+	robot_imu.gyro_calibration_coefficients[icm_z] = -10;
+#endif
+
 	robot_imu.complementary_filter_coefficient = 0.1f;
 
 	// ****** NRF24L01+ initialization ****** //
@@ -210,9 +229,9 @@ int main(void)
 
 	// Board is online LED
 	// Для отладки (проверки того, что новый код действительно был скомпилирована и прошит) время от времени буду менять, какой из светодиодов горт.
-	GPIOD->ODR |= 0x08;
+//	GPIOD->ODR |= 0x08;
 //	GPIOD->ODR |= 0x04;
-//	GPIOD->ODR |= 0x02;
+	GPIOD->ODR |= 0x02;
 //	GPIOD->ODR |= 0x01;
 
 	// Enables both motors
@@ -230,12 +249,14 @@ int main(void)
 	add_to_mistakes_log(icm_20600_basic_init(&robot_imu));
 
 	// If necessary imu can be calibrated
-//	imu_gyro_calibration(&robot_imu, gyro_calib_values);
+	imu_gyro_calibration(&robot_imu, gyro_calib_values);
 
 	icm_20600_get_proccesed_data(&robot_imu, icm_processed_data);
 
 	angle_current_value = atan2(-1 * icm_processed_data[icm_accelerometer_x], icm_processed_data[icm_accelerometer_z]) * 57.296f;
-	angle_first_value = angle_current_value;
+	choose_state(angle_current_value, &current_controller_state);
+
+
 
 	while(1)
 	{
@@ -284,8 +305,13 @@ void SysTick_Handler()
 		current_m1_speed = motors_get_speed_by_incements(&motor1, SPEED_LOOP_PERIOD);
 		current_m2_speed = motors_get_speed_by_incements(&motor2, SPEED_LOOP_PERIOD);
 
+		// Если робот находится в горизонтальном положении должен работать регулятор скорости
+//		if
+
+
+		// Этот костыль надо будет исправить
 		rotation_mistake = robot_rotation_task;// - (current_m2_speed - current_m1_speed) / 0.18f ; // где 0.18 - длина оси в метрах/*тут должна бытьдлина оси*/
-		if (rotation_mistake > 2 )
+		if ( rotation_mistake > 2 )
 		{
 			rotation_mistake = 2;
 		}
@@ -381,7 +407,7 @@ void handle_angle_reg(icm_20600 *icm_instance, int16_t icm_data[], float integra
 	// Проверкае на переход между -180 и 180 и соответственно смену знака
 
 	angle_current_value = accelerometer_based_angle * icm_instance->complementary_filter_coefficient + gyroscope_based_angle * (1.0f - icm_instance->complementary_filter_coefficient);
-//	angle_current_value = -1 * ( accelerometer_based_angle * icm_instance->complementary_filter_coefficient /*+ проверка знака */ - gyroscope_based_angle * (1.0f - icm_instance->complementary_filter_coefficient));
+	choose_state(angle_current_value, &current_controller_state);
 
 	angle_loop_mistake = angle_loop_task - angle_current_value;
 
@@ -389,9 +415,6 @@ void handle_angle_reg(icm_20600 *icm_instance, int16_t icm_data[], float integra
 	if (angle_loop_mistake > 20.0f || angle_loop_mistake < -20.0f)
 	{
 		balancing_fault = 1;
-//		motor_reset(&motor1);
-//		motor_reset(&motor2);
-		// пока тестирую без регуляторов скорости
 		motor1.set_pwm_duty_cycle(0);
 		motor2.set_pwm_duty_cycle(0);
 		angle_loop_integral = 0.0f;
@@ -417,11 +440,6 @@ void handle_angle_reg(icm_20600 *icm_instance, int16_t icm_data[], float integra
 	angle_loop_i_part = angle_loop_integral * angle_regulator_ki;
 
 	angle_loop_control_signal = -1* (angle_loop_p_part + angle_loop_i_part + angle_loop_d_part);
-
-//	motor1.set_pwm_duty_cycle(angle_loop_control_signal * 300.0f );
-//	motor2.set_pwm_duty_cycle(angle_loop_control_signal * 300.0f );
-
-	// Попытки заставить робота поворачивать на месте
 
 	if( rotation_mistake > 0)
 	{
@@ -597,6 +615,12 @@ void clear_int_array(int32_t input_array[], uint32_t array_length)
 		input_array[i] = 0;
 	}
 }
+
+#ifdef SIDE_ONE_CODE
+	#ifdef SIDE_TWO_CODE
+		#error "Ну ты че творишь"
+	#endif
+#endif
 
 // EOF
 

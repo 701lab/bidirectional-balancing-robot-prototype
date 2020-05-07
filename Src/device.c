@@ -65,24 +65,110 @@ void imu_gyro_calibration(icm_20600 *icm_instance, int16_t calibration_coeficien
 }
 
 
-
 // !!!!!!!!!!!!!!!!!!!!!!!!!!  //
 // Danger zone
 // !!!!!!!!!!!!!!!!!!!!!!!!!!! //
 
+// Система входит в режим балансирвоания из горизонтального режима только если отклонение от номинального для баланисирования угла меньше 15 по модулю.
+// Система входит в горизонтальное режим из режима балансирования Если отклонеение угла от номинального для балансирования больше 20 по модулю.
+void choose_state(float current_angle_value, uint32_t *current_system_state)
+{
+	// 90 градусов - угол балансирования в прямом направдения
 
-//void balancing_init(icm_20600 *icm_instance)
-//{
-//	// Перед запуском алгоритма балансирования нужно убедиться в том, какой именно угол сейчас у корпуса робота. Происходить такое вычисление будет только для плоскости Oxz,
-//	//	так как только она используется в алгоритмах балансирования
-//	float processed_values[7];
-//	icm_20600_get_proccesed_data(icm_instance, processed_values);
-//
-////	float accelerometer_based_angle = atan2(processed_values[icm_accelerometer_x], processed_values[icm_accelerometer_z]);
-//	= atan2(processed_values[icm_accelerometer_x], processed_values[icm_accelerometer_z]);
-//
-//
-//}
+	switch (*current_system_state){
+		case blancing_state:	// условно от 70 до 110 градусов
+		{
+			if ( current_angle_value < 70.0f && current_angle_value > -75.0f )
+			{
+				*current_system_state = upper_horizon_state;
+				GPIOD->ODR &= ~0x0C;
+				GPIOD->ODR |= upper_horizon_state << 2;
+			}
+			else if ( current_angle_value > 110.0f || current_angle_value < -105.0f )
+			{
+				*current_system_state = lower_horizon_state;
+				GPIOD->ODR &= ~0x0C;
+				GPIOD->ODR |= lower_horizon_state << 2;
+			}
+			else if ( current_angle_value <= -75.0f && current_angle_value >= -105.0f )
+			{
+				*current_system_state = up_side_down_balancing_state;
+				GPIOD->ODR &= ~0x0C;
+				GPIOD->ODR |= up_side_down_balancing_state << 2;
+			}
 
+			break;
+		}
+		case upper_horizon_state: // условно от -75 до 75 грудусов чтобы при переходе было поле задержки
+		{
+			if (current_angle_value >= 75.0f && current_angle_value <= 105.0f)
+			{
+				*current_system_state = blancing_state;
+				GPIOD->ODR &= ~0x0C;
+				GPIOD->ODR |= blancing_state << 2;
+			}
+			else if ( current_angle_value > 105.0f || current_angle_value < -105.0f )
+			{
+				*current_system_state = lower_horizon_state;
+				GPIOD->ODR &= ~0x0C;
+				GPIOD->ODR |= lower_horizon_state << 2;
+			}
+			else if ( current_angle_value <= -75.0f && current_angle_value >= -105 )
+			{
+				*current_system_state = up_side_down_balancing_state;
+				GPIOD->ODR &= ~0x0C;
+				GPIOD->ODR |= up_side_down_balancing_state << 2;
+			}
 
+			break;
+		}
+		case lower_horizon_state: // Условно от -180 до -105 и от 105 до 180
+		{
+			if (current_angle_value >= 75.0f && current_angle_value <= 105.0f)
+			{
+				*current_system_state = blancing_state;
+				GPIOD->ODR &= ~0x0C;
+				GPIOD->ODR |= blancing_state << 2;
+			}
+			else if ( current_angle_value < 75.0f && current_angle_value > -75.0f )
+			{
+				*current_system_state = upper_horizon_state;
+				GPIOD->ODR &= ~0x0C;
+				GPIOD->ODR |= upper_horizon_state << 2;
+			}
+			else if ( current_angle_value <= -75.0f && current_angle_value >= -105.0f )
+			{
+				*current_system_state = up_side_down_balancing_state;
+				GPIOD->ODR &= ~0x0C;
+				GPIOD->ODR |= up_side_down_balancing_state << 2;
+			}
+
+			break;
+		}
+		case up_side_down_balancing_state:
+		{
+			if (current_angle_value >= 75.0f && current_angle_value <= 105.0f)
+			{
+				*current_system_state = blancing_state;
+				GPIOD->ODR &= ~0x0C;
+				GPIOD->ODR |= blancing_state << 2;
+			}
+			else if ( current_angle_value < 75.0f && current_angle_value > -70.0f )
+			{
+				*current_system_state = upper_horizon_state;
+				GPIOD->ODR &= ~0x0C;
+				GPIOD->ODR |= upper_horizon_state << 2;
+			}
+			else if ( current_angle_value > 105.0f || current_angle_value < -110.0f )
+			{
+				*current_system_state = lower_horizon_state;
+				GPIOD->ODR &= ~0x0C;
+				GPIOD->ODR |= lower_horizon_state << 2;
+			}
+
+			break;
+		}
+		default: break;
+	}
+}
 
