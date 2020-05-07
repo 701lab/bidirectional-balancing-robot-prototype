@@ -1,3 +1,4 @@
+#### C ignore ####
 # Prerequisites
 *.d
 
@@ -50,3 +51,20 @@ modules.order
 Module.symvers
 Mkfile.old
 dkms.conf
+
+
+### project ignore ##
+
+#CubeIDE project
+/*
+!/Src/
+!/Inc/
+!/nrf24l01p_impi/
+!/icm-20600_impi/
+!/rbv1.2-implementation/
+
+#!/Inc/ # I should have all files in SRC, or even without a folder, so it will be easier to link them to project when I will submodule it 
+/Src/syscalls.c
+/Src/sysmem.c
+
+# main.c 
