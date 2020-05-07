@@ -19,9 +19,11 @@
  */
 
 
-#define SIDE_ONE_CODE
-//#define SIDE_TWO_CODE
+//#define SIDE_ONE_CODE
+#define SIDE_TWO_CODE
 
+
+void choose_state(float current_angle_value, uint32_t *current_system_state);
 
 // ********************************** //
 // ****** Motor 1 declarations ****** //
@@ -163,7 +165,7 @@ float gyroscope_based_angle;
 /* Переменные конечного автомата */
 // Переключение из режима балансирования в горизонтальный режим при ошибке по углу в 20 градусов
 // Переключение из горизонтального режима в режим балансирования при ошибке по углу в 15 градусов
-uint32_t current_controller_state = blancing_state;
+uint32_t current_controller_state = balancing_state;
 
 int main(void)
 {
@@ -228,11 +230,7 @@ int main(void)
 	full_device_setup(yes, yes);
 
 	// Board is online LED
-	// Для отладки (проверки того, что новый код действительно был скомпилирована и прошит) время от времени буду менять, какой из светодиодов горт.
-//	GPIOD->ODR |= 0x08;
-//	GPIOD->ODR |= 0x04;
 	GPIOD->ODR |= 0x02;
-//	GPIOD->ODR |= 0x01;
 
 	// Enables both motors
 	motor1.motor_enable();
@@ -249,7 +247,7 @@ int main(void)
 	add_to_mistakes_log(icm_20600_basic_init(&robot_imu));
 
 	// If necessary imu can be calibrated
-	imu_gyro_calibration(&robot_imu, gyro_calib_values);
+//	imu_gyro_calibration(&robot_imu, gyro_calib_values);
 
 	icm_20600_get_proccesed_data(&robot_imu, icm_processed_data);
 
@@ -306,7 +304,13 @@ void SysTick_Handler()
 		current_m2_speed = motors_get_speed_by_incements(&motor2, SPEED_LOOP_PERIOD);
 
 		// Если робот находится в горизонтальном положении должен работать регулятор скорости
-//		if
+		if ( current_controller_state == lower_horizon_state || current_controller_state == upper_horizon_state )
+		{
+			float m1_speed_task = motors_speed_controller_handler(&motor1, SPEED_LOOP_PERIOD);
+			float m2_speed_task = motors_speed_controller_handler(&motor2, SPEED_LOOP_PERIOD);
+			motor1.set_pwm_duty_cycle((int32_t)m1_speed_task);
+			motor2.set_pwm_duty_cycle((int32_t)m2_speed_task);
+		}
 
 
 		// Этот костыль надо будет исправить
@@ -409,22 +413,14 @@ void handle_angle_reg(icm_20600 *icm_instance, int16_t icm_data[], float integra
 	angle_current_value = accelerometer_based_angle * icm_instance->complementary_filter_coefficient + gyroscope_based_angle * (1.0f - icm_instance->complementary_filter_coefficient);
 	choose_state(angle_current_value, &current_controller_state);
 
-	angle_loop_mistake = angle_loop_task - angle_current_value;
 
 	// If angle is too big too balance stop motors
-	if (angle_loop_mistake > 20.0f || angle_loop_mistake < -20.0f)
+	if ( current_controller_state != balancing_state )
 	{
-		balancing_fault = 1;
-		motor1.set_pwm_duty_cycle(0);
-		motor2.set_pwm_duty_cycle(0);
-		angle_loop_integral = 0.0f;
-		angle_loop_task = actual_zero_angle;
 		return;
 	}
-	else
-	{
-		balancing_fault = 0;
-	}
+
+	angle_loop_mistake = angle_loop_task - angle_current_value;
 
 	if (!((angle_loop_control_signal > angle_loop_max_output && angle_loop_mistake < 0.0f) || (angle_loop_control_signal < -angle_loop_max_output && angle_loop_mistake > 0.0f)))
 	{
@@ -483,7 +479,7 @@ void handle_angle_reg(icm_20600 *icm_instance, int16_t icm_data[], float integra
 void handle_speed_reg(float average_motors_speed)
 {
 
-	if (balancing_fault)
+	if ( current_controller_state != balancing_state )
 	{
 		speed_reg_integral = 0.0f;
 		speed_reg_mistake = 0.0f;
@@ -499,7 +495,7 @@ void handle_speed_reg(float average_motors_speed)
 	{
 		speed_reg_control_signal = speed_loop_p_part - 3;
 	}
-	else if ( speed_loop_i_part > 3)
+	else if ( speed_loop_i_part > 3 )
 	{
 		speed_reg_control_signal = speed_loop_p_part + 3;
 	}
@@ -509,10 +505,6 @@ void handle_speed_reg(float average_motors_speed)
 	}
 
 	angle_loop_task = actual_zero_angle + speed_reg_control_signal;
-//	if (speed_reg_control_signal < 10.0f && speed_reg_control_signal > -10.0f)
-//	{
-//		angle_loop_task = actual_zero_angle + speed_reg_control_signal;
-//	}
 
 }
 
@@ -531,6 +523,9 @@ void EXTI2_3_IRQHandler()
 	robot_rotation_task = 0.0f;
 	speed_reg_task = 0.0f;
 
+
+	float target_speed_m1 = 0.0f;
+	float target_speed_m2 = 0.0f;
 	// Check for buttons press
 //	if((nrf_input_data[4] & 0x14) == 0x14){ // means, that top right button is unpressed
 //		// Do nothing
@@ -547,48 +542,115 @@ void EXTI2_3_IRQHandler()
 	// Evaluate the speed tasks
 	if(nrf_input_data[2] < 1000 /*means it up*/ && nrf_input_data[1] < 3000 && nrf_input_data[1] > 1000) // Forward
 	{
-		speed_reg_task = 1.5f;
-		speed_reg_integral = 0.0f;
+		if(current_controller_state == balancing_state)
+		{
+			speed_reg_task = 1.5f;
+			speed_reg_integral = 0.0f;
+		}
+		else
+		{
+			target_speed_m1 = 2.5f;
+			target_speed_m2 = 2.5f;
+		}
 	}
 	else if(nrf_input_data[2] < 1000 /*means it up*/ && nrf_input_data[1] < 1000)	// Forward left
 	{
-		speed_reg_task = 1.0f;
-		robot_rotation_task = 0.5f;
-		speed_reg_integral = 0.0f;
+		if(current_controller_state == balancing_state)
+		{
+			speed_reg_task = 1.0f;
+			robot_rotation_task = 0.5f;
+			speed_reg_integral = 0.0f;
+		}
 	}
 	else if(nrf_input_data[2] > 1000 && nrf_input_data[2] < 3000 && nrf_input_data[1] < 1000)	// Turn left
 	{
-		robot_rotation_task = 1.0f;
-		speed_reg_integral = 0.0f;
+		if(current_controller_state == balancing_state)
+		{
+			robot_rotation_task = 1.0f;
+			speed_reg_integral = 0.0f;
+		}
+		else
+		{
+			target_speed_m1 = 0.8f;
+			target_speed_m2 = - 0.8f;
+		}
+
 	}
 	else if(nrf_input_data[2] > 3000 && nrf_input_data[1] < 1000)	// Backward left
 	{
-		speed_reg_task = -1.0f;
-		robot_rotation_task = -0.5f;
-		speed_reg_integral = 0.0f;
+		if(current_controller_state == balancing_state)
+		{
+			speed_reg_task = -1.0f;
+			robot_rotation_task = -0.5f;
+			speed_reg_integral = 0.0f;
+		}
 	}
 	else if(nrf_input_data[2] > 3000  && nrf_input_data[1] < 3000 && nrf_input_data[1] > 1000)	// Backward
 	{
-		speed_reg_task = -1.5f;
-		speed_reg_integral = 0.0f;
+		if(current_controller_state == balancing_state)
+		{
+			speed_reg_task = -1.5f;
+			speed_reg_integral = 0.0f;
+		}
+		else
+		{
+			target_speed_m1 = - 2.5f;
+			target_speed_m2 = - 2.5f;
+		}
+
 	}
 	else if(nrf_input_data[2] > 3000 && nrf_input_data[1] > 3000)	// Backward right
 	{
-		speed_reg_task = -1.0f;
-		robot_rotation_task = 0.5f;
-		speed_reg_integral = 0.0f;
+		if(current_controller_state == balancing_state)
+		{
+			speed_reg_task = -1.0f;
+			robot_rotation_task = 0.5f;
+			speed_reg_integral = 0.0f;
+		}
 	}
 	else if(nrf_input_data[2] < 1000 && nrf_input_data[1] > 3000)	// Forward right
 	{
-		speed_reg_task = 1.0f;
-		robot_rotation_task = -0.5f;
-		speed_reg_integral = 0.0f;
+		if(current_controller_state == balancing_state)
+		{
+			speed_reg_task = 1.0f;
+			robot_rotation_task = -0.5f;
+			speed_reg_integral = 0.0f;
+		}
 	}
 	else if(nrf_input_data[2] > 1000 && nrf_input_data[2] < 3000 && nrf_input_data[1] > 3000)	// Turn right
 	{
-		robot_rotation_task = -1.0f;
-		speed_reg_integral = 0.0f;
+		if(current_controller_state == balancing_state)
+		{
+			robot_rotation_task = -1.0f;
+			speed_reg_integral = 0.0f;
+		}
+		else
+		{
+			target_speed_m1 = - 0.8f;
+			target_speed_m2 = 0.8f;
+		}
 	}
+
+
+	if ( current_controller_state == upper_horizon_state || current_controller_state == lower_horizon_state)
+	{
+		#ifdef SIDE_ONE_CODE
+		motor1.speed_controller->target_speed = target_speed_m1;
+		motor2.speed_controller->target_speed = target_speed_m2;
+		#endif
+
+		#ifdef SIDE_TWO_CODE
+		motor1.speed_controller->target_speed = -1 * target_speed_m2;
+		motor2.speed_controller->target_speed = -1 * target_speed_m1;
+		#endif
+	}
+
+//	if ( current_controller_state == lower_horizon_state )
+//	{
+//		motor1.speed_controller->target_speed = -1 * target_speed_m1;
+//		motor2.speed_controller->target_speed = -1 * target_speed_m2;
+//	}
+
 }
 // **************************************** //
 
@@ -613,6 +675,291 @@ void clear_int_array(int32_t input_array[], uint32_t array_length)
 	for(uint32_t i = 0; i < array_length; ++i)
 	{
 		input_array[i] = 0;
+	}
+}
+
+// Система входит в режим балансирвоания из горизонтального режима только если отклонение от номинального для баланисирования угла меньше 15 по модулю.
+// Система входит в горизонтальное режим из режима балансирования Если отклонеение угла от номинального для балансирования больше 20 по модулю.
+void choose_state(float current_angle_value, uint32_t *current_system_state)
+{
+	// 90 градусов - угол балансирования в прямом направдения
+
+	switch (*current_system_state){
+		case balancing_state:	// условно от 70 до 110 градусов
+		{
+//			if ( current_angle_value < 70.0f && current_angle_value > -75.0f )
+			if ( current_angle_value < 60.0f && current_angle_value > -65.0f )
+			{
+				*current_system_state = upper_horizon_state;
+				GPIOD->ODR &= ~0x0C;
+				GPIOD->ODR |= upper_horizon_state << 2;
+
+				// Stop from balancing movement
+				motor1.set_pwm_duty_cycle(0);
+				motor2.set_pwm_duty_cycle(0);
+
+				// New default speed value is 0
+				motor1.speed_controller->target_speed = 0.0f;
+				motor1.speed_controller->current_integral = 0.0f;
+				motor2.speed_controller->target_speed = 0.0f;
+				motor2.speed_controller->current_integral = 0.0f;
+
+				// Remove all angle controller paramteres
+				angle_loop_integral = 0.0f;
+				angle_loop_task = actual_zero_angle;
+			}
+//			else if ( current_angle_value > 110.0f || current_angle_value < -105.0f )
+			else if ( current_angle_value > 120.0f || current_angle_value < -115.0f )
+			{
+				*current_system_state = lower_horizon_state;
+				GPIOD->ODR &= ~0x0C;
+				GPIOD->ODR |= lower_horizon_state << 2;
+
+				// Stop from balancing movement
+				motor1.set_pwm_duty_cycle(0);
+				motor2.set_pwm_duty_cycle(0);
+
+				// New default speed value is 0
+				motor1.speed_controller->target_speed = 0.0f;
+				motor1.speed_controller->current_integral = 0.0f;
+				motor2.speed_controller->target_speed = 0.0f;
+				motor2.speed_controller->current_integral = 0.0f;
+
+				// Remove all angle controller paramteres
+				angle_loop_integral = 0.0f;
+				angle_loop_task = actual_zero_angle;
+			}
+//			else if ( current_angle_value <= -75.0f && current_angle_value >= -105.0f )
+			else if ( current_angle_value <= -65.0f && current_angle_value >= -115.0f )
+			{
+				*current_system_state = up_side_down_balancing_state;
+				GPIOD->ODR &= ~0x0C;
+				GPIOD->ODR |= up_side_down_balancing_state << 2;
+
+				// Stop from balancing movement
+				motor1.set_pwm_duty_cycle(0);
+				motor2.set_pwm_duty_cycle(0);
+
+				// New default speed value is 0
+				motor1.speed_controller->target_speed = 0.0f;
+				motor1.speed_controller->current_integral = 0.0f;
+				motor2.speed_controller->target_speed = 0.0f;
+				motor2.speed_controller->current_integral = 0.0f;
+
+				// Remove all angle controller paramteres
+				angle_loop_integral = 0.0f;
+				angle_loop_task = actual_zero_angle;
+			}
+
+
+
+			break;
+		}
+		case upper_horizon_state: // условно от -75 до 75 грудусов чтобы при переходе было поле задержки
+		{
+//			if (current_angle_value >= 75.0f && current_angle_value <= 105.0f)
+			if (current_angle_value >= 65.0f && current_angle_value <= 115.0f)
+			{
+				*current_system_state = balancing_state;
+				GPIOD->ODR &= ~0x0C;
+				GPIOD->ODR |= balancing_state << 2;
+
+				// Stop from balancing movement
+				motor1.set_pwm_duty_cycle(0);
+				motor2.set_pwm_duty_cycle(0);
+
+				// New default speed value is 0
+				motor1.speed_controller->target_speed = 0.0f;
+				motor1.speed_controller->current_integral = 0.0f;
+				motor2.speed_controller->target_speed = 0.0f;
+				motor2.speed_controller->current_integral = 0.0f;
+
+				// Remove all angle controller paramteres
+				angle_loop_integral = 0.0f;
+				angle_loop_task = actual_zero_angle;
+			}
+//			else if ( current_angle_value > 105.0f || current_angle_value < -105.0f )
+			else if ( current_angle_value > 115.0f || current_angle_value < -115.0f )
+			{
+				*current_system_state = lower_horizon_state;
+				GPIOD->ODR &= ~0x0C;
+				GPIOD->ODR |= lower_horizon_state << 2;
+
+				// Stop from balancing movement
+				motor1.set_pwm_duty_cycle(0);
+				motor2.set_pwm_duty_cycle(0);
+
+				// New default speed value is 0
+				motor1.speed_controller->target_speed = 0.0f;
+				motor1.speed_controller->current_integral = 0.0f;
+				motor2.speed_controller->target_speed = 0.0f;
+				motor2.speed_controller->current_integral = 0.0f;
+
+				// Remove all angle controller paramteres
+				angle_loop_integral = 0.0f;
+				angle_loop_task = actual_zero_angle;
+			}
+//			else if ( current_angle_value <= -75.0f && current_angle_value >= -105 )
+			else if ( current_angle_value <= -65.0f && current_angle_value >= -115 )
+			{
+				*current_system_state = up_side_down_balancing_state;
+				GPIOD->ODR &= ~0x0C;
+				GPIOD->ODR |= up_side_down_balancing_state << 2;
+
+				// Stop from balancing movement
+				motor1.set_pwm_duty_cycle(0);
+				motor2.set_pwm_duty_cycle(0);
+
+				// New default speed value is 0
+				motor1.speed_controller->target_speed = 0.0f;
+				motor1.speed_controller->current_integral = 0.0f;
+				motor2.speed_controller->target_speed = 0.0f;
+				motor2.speed_controller->current_integral = 0.0f;
+
+				// Remove all angle controller paramteres
+				angle_loop_integral = 0.0f;
+				angle_loop_task = actual_zero_angle;
+			}
+
+			break;
+		}
+		case lower_horizon_state: // Условно от -180 до -105 и от 105 до 180
+		{
+//			if (current_angle_value >= 75.0f && current_angle_value <= 105.0f)
+			if (current_angle_value >= 65.0f && current_angle_value <= 115.0f)
+			{
+				*current_system_state = balancing_state;
+				GPIOD->ODR &= ~0x0C;
+				GPIOD->ODR |= balancing_state << 2;
+
+				// Stop from balancing movement
+				motor1.set_pwm_duty_cycle(0);
+				motor2.set_pwm_duty_cycle(0);
+
+				// New default speed value is 0
+				motor1.speed_controller->target_speed = 0.0f;
+				motor1.speed_controller->current_integral = 0.0f;
+				motor2.speed_controller->target_speed = 0.0f;
+				motor2.speed_controller->current_integral = 0.0f;
+
+				// Remove all angle controller paramteres
+				angle_loop_integral = 0.0f;
+				angle_loop_task = actual_zero_angle;
+			}
+//			else if ( current_angle_value < 75.0f && current_angle_value > -75.0f )
+			else if ( current_angle_value < 65.0f && current_angle_value > -65.0f )
+			{
+				*current_system_state = upper_horizon_state;
+				GPIOD->ODR &= ~0x0C;
+				GPIOD->ODR |= upper_horizon_state << 2;
+
+				// Stop from balancing movement
+				motor1.set_pwm_duty_cycle(0);
+				motor2.set_pwm_duty_cycle(0);
+
+				// New default speed value is 0
+				motor1.speed_controller->target_speed = 0.0f;
+				motor1.speed_controller->current_integral = 0.0f;
+				motor2.speed_controller->target_speed = 0.0f;
+				motor2.speed_controller->current_integral = 0.0f;
+
+				// Remove all angle controller paramteres
+				angle_loop_integral = 0.0f;
+				angle_loop_task = actual_zero_angle;
+			}
+//			else if ( current_angle_value <= -75.0f && current_angle_value >= -105.0f )
+			else if ( current_angle_value <= -65.0f && current_angle_value >= -115.0f )
+			{
+				*current_system_state = up_side_down_balancing_state;
+				GPIOD->ODR &= ~0x0C;
+				GPIOD->ODR |= up_side_down_balancing_state << 2;
+
+				// Stop from balancing movement
+				motor1.set_pwm_duty_cycle(0);
+				motor2.set_pwm_duty_cycle(0);
+
+				// New default speed value is 0
+				motor1.speed_controller->target_speed = 0.0f;
+				motor1.speed_controller->current_integral = 0.0f;
+				motor2.speed_controller->target_speed = 0.0f;
+				motor2.speed_controller->current_integral = 0.0f;
+
+				// Remove all angle controller paramteres
+				angle_loop_integral = 0.0f;
+				angle_loop_task = actual_zero_angle;
+			}
+
+			break;
+		}
+		case up_side_down_balancing_state:
+		{
+//			if (current_angle_value >= 75.0f && current_angle_value <= 105.0f)
+			if (current_angle_value >= 65.0f && current_angle_value <= 115.0f)
+			{
+				*current_system_state = balancing_state;
+				GPIOD->ODR &= ~0x0C;
+				GPIOD->ODR |= balancing_state << 2;
+
+				// Stop from balancing movement
+				motor1.set_pwm_duty_cycle(0);
+				motor2.set_pwm_duty_cycle(0);
+
+				// New default speed value is 0
+				motor1.speed_controller->target_speed = 0.0f;
+				motor1.speed_controller->current_integral = 0.0f;
+				motor2.speed_controller->target_speed = 0.0f;
+				motor2.speed_controller->current_integral = 0.0f;
+
+				// Remove all angle controller paramteres
+				angle_loop_integral = 0.0f;
+				angle_loop_task = actual_zero_angle;
+			}
+//			else if ( current_angle_value < 75.0f && current_angle_value > -70.0f )
+			else if ( current_angle_value < 65.0f && current_angle_value > -60.0f )
+			{
+				*current_system_state = upper_horizon_state;
+				GPIOD->ODR &= ~0x0C;
+				GPIOD->ODR |= upper_horizon_state << 2;
+
+				// Stop from balancing movement
+				motor1.set_pwm_duty_cycle(0);
+				motor2.set_pwm_duty_cycle(0);
+
+				// New default speed value is 0
+				motor1.speed_controller->target_speed = 0.0f;
+				motor1.speed_controller->current_integral = 0.0f;
+				motor2.speed_controller->target_speed = 0.0f;
+				motor2.speed_controller->current_integral = 0.0f;
+
+				// Remove all angle controller paramteres
+				angle_loop_integral = 0.0f;
+				angle_loop_task = actual_zero_angle;
+			}
+//			else if ( current_angle_value > 105.0f || current_angle_value < -110.0f )
+			else if ( current_angle_value > 115.0f || current_angle_value < -120.0f )
+			{
+				*current_system_state = lower_horizon_state;
+				GPIOD->ODR &= ~0x0C;
+				GPIOD->ODR |= lower_horizon_state << 2;
+
+				// Stop from balancing movement
+				motor1.set_pwm_duty_cycle(0);
+				motor2.set_pwm_duty_cycle(0);
+
+				// New default speed value is 0
+				motor1.speed_controller->target_speed = 0.0f;
+				motor1.speed_controller->current_integral = 0.0f;
+				motor2.speed_controller->target_speed = 0.0f;
+				motor2.speed_controller->current_integral = 0.0f;
+
+				// Remove all angle controller paramteres
+				angle_loop_integral = 0.0f;
+				angle_loop_task = actual_zero_angle;
+			}
+
+			break;
+		}
+		default: break;
 	}
 }
 

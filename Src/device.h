@@ -21,7 +21,7 @@ enum controller_states{
 	up_side_down_balancing_state = (0U),
 	lower_horizon_state = (1U),
 	upper_horizon_state  = (2U),
-	blancing_state = (3U),
+	balancing_state = (3U),
 };
 
 /*
@@ -33,7 +33,6 @@ void imu_gyro_calibration(icm_20600 *icm_instance, int16_t calibration_coeficien
 
 void balancing_init(icm_20600 *icm_instance);
 
-void choose_state(float current_angle_value, uint32_t *current_system_state);
 
 
 #endif /* DEVICE_H_ */
